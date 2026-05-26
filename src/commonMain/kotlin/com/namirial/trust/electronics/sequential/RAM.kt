@@ -13,7 +13,7 @@ import com.namirial.trust.electronics.core.*
  *
  * @param addressBits number of address bits (e.g., 16 for 64KB)
  */
-open class RAM @JvmOverloads constructor(
+open class RAM constructor(
     override val address: List<Signal>,
     override val dataIn: List<Signal>,
     override val writeEnable: Signal,

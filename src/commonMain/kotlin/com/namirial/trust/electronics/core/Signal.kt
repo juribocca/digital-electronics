@@ -1,5 +1,7 @@
 package com.namirial.trust.electronics.core
 
+import kotlin.jvm.JvmInline
+
 interface Signal {
     val value: Boolean
 }
