@@ -44,5 +44,6 @@ fun main() {
     gr.clock()
     // gr.dataOut.toOutputByte().toByte()
     // gr.typedDataOut.toByte()
+    println("finito")
 
 }
