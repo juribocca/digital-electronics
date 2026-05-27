@@ -31,6 +31,9 @@ class Amiga500 {
     val floppyDrives = Array(4) { FloppyDrive() }
     val floppyController: FloppyController
 
+    // Input
+    val input = InputController()
+
     val customRegisters: CustomRegisters
 
     private var colorClockCounter = 0
@@ -41,7 +44,7 @@ class Amiga500 {
     init {
         floppyController = FloppyController(bus, paula)
         floppyController.drive = floppyDrives[0]
-        customRegisters = CustomRegisters(agnus, denise, paula, floppyController)
+        customRegisters = CustomRegisters(agnus, denise, paula, floppyController, input)
         agnus.bus = bus
         agnus.paula = paula
         agnus.denise = denise
@@ -90,6 +93,9 @@ class Amiga500 {
             }
         }
 
+        // Audio DMA: tick every color clock
+        paula.tickAudio(bus, agnus.dmacon)
+
         // Advance beam
         val vblank = agnus.advanceBeam()
         if (vblank) {
@@ -102,6 +108,8 @@ class Amiga500 {
             ciaTickDivider = 0
             ciaA.tick()
             ciaB.tick()
+            input.tick(ciaA)
+            input.updateFireButtons(ciaA)
             updateDiskSignals()
             if (ciaA.irqPending()) paula.requestInterrupt(Paula.INT_PORTS)
             if (ciaB.irqPending()) paula.requestInterrupt(Paula.INT_EXTER)

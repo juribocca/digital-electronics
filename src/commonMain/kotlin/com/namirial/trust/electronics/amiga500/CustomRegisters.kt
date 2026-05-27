@@ -9,7 +9,8 @@ class CustomRegisters(
     val agnus: Agnus,
     val denise: Denise,
     val paula: Paula,
-    var floppy: FloppyController? = null
+    var floppy: FloppyController? = null,
+    var input: InputController? = null
 ) {
     fun readByte(offset: Int): Int {
         val word = readWord(offset and 0x1FE)
@@ -17,6 +18,7 @@ class CustomRegisters(
     }
 
     fun readWord(offset: Int): Int = when {
+        isInputReg(offset) -> readInputReg(offset)
         isDiskReg(offset) -> floppy?.readReg(offset) ?: 0
         isPaulaReg(offset) -> paula.readReg(offset)
         isDeniseReg(offset) -> denise.readReg(offset)
@@ -60,5 +62,13 @@ class CustomRegisters(
         in 0x180..0x1BF   // COLOR00–COLOR31
         -> true
         else -> false
+    }
+
+    private fun isInputReg(offset: Int): Boolean = offset == 0x00A || offset == 0x00C
+
+    private fun readInputReg(offset: Int): Int = when (offset) {
+        0x00A -> input?.joy0dat ?: 0  // JOY0DAT
+        0x00C -> input?.joy1dat ?: 0  // JOY1DAT
+        else -> 0
     }
 }

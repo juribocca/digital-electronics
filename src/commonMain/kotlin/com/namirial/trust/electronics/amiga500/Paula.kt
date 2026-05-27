@@ -39,19 +39,82 @@ class Paula {
         const val INT_EXTER = 13   // CIA-B (external)
     }
 
-    // --- Audio channels (stub) ---
+    // --- Audio channels with DMA state machine ---
     data class AudioChannel(
         var locationHi: Int = 0,   // AUDxLCH
         var locationLo: Int = 0,   // AUDxLCL
         var length: Int = 0,       // AUDxLEN (words)
         var period: Int = 0,       // AUDxPER
         var volume: Int = 0,       // AUDxVOL (0–64)
-        var data: Int = 0          // AUDxDAT
+        var data: Int = 0,         // AUDxDAT
+        // DMA state
+        var dmaPtr: Int = 0,       // Current DMA fetch pointer
+        var lenCounter: Int = 0,   // Words remaining in current buffer
+        var periodCounter: Int = 0,// Countdown to next sample output
+        var currentSample: Int = 0,// Current 8-bit sample being output
+        var highByte: Boolean = true // Outputting high or low byte of data word
     ) {
         val location: Int get() = ((locationHi and 0x1F) shl 16) or (locationLo and 0xFFFE)
     }
 
     val audio = Array(4) { AudioChannel() }
+
+    /** Current output sample per channel (signed 8-bit × volume, for external use). */
+    val audioOutput = IntArray(4)
+
+    /**
+     * Tick audio DMA — called once per DMA slot (every color clock).
+     * Each channel counts down its period; when it reaches 0, outputs next sample byte.
+     * When the data register is exhausted, fetches next word from DMA pointer.
+     * When length counter reaches 0, reloads pointer/length and fires interrupt.
+     */
+    fun tickAudio(bus: AddressBus, dmacon: Int) {
+        for (ch in 0 until 4) {
+            val dmaEnabled = (dmacon and (1 shl ch)) != 0 && (dmacon and 0x200) != 0
+            val a = audio[ch]
+
+            if (a.period == 0) continue
+            a.periodCounter--
+            if (a.periodCounter > 0) continue
+
+            // Period expired — output next sample byte
+            a.periodCounter = a.period
+
+            if (a.highByte) {
+                a.currentSample = (a.data shr 8) and 0xFF
+                a.highByte = false
+            } else {
+                a.currentSample = a.data and 0xFF
+                a.highByte = true
+
+                // Need next word
+                if (dmaEnabled) {
+                    a.lenCounter--
+                    if (a.lenCounter <= 0) {
+                        // Buffer empty — reload and interrupt
+                        a.dmaPtr = a.location
+                        a.lenCounter = if (a.length == 0) 65536 else a.length
+                        requestInterrupt(INT_AUD0 + ch)
+                    }
+                    a.data = bus.readWord(a.dmaPtr and 0x1FFFFE)
+                    a.dmaPtr += 2
+                }
+            }
+
+            // Output: signed sample × volume (result is 14-bit signed)
+            val signed = a.currentSample.toByte().toInt() // sign-extend to int
+            audioOutput[ch] = signed * a.volume
+        }
+    }
+
+    /** Start audio DMA for a channel (called when DMACON enables a channel). */
+    fun startAudioDMA(ch: Int) {
+        val a = audio[ch]
+        a.dmaPtr = a.location
+        a.lenCounter = if (a.length == 0) 65536 else a.length
+        a.periodCounter = a.period
+        a.highByte = true
+    }
 
     /** Read a Paula register. */
     fun readReg(offset: Int): Int = when (offset) {

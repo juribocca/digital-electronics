@@ -82,6 +82,10 @@ class Agnus {
     // --- Bitplane pointers ---
     val bplpt = IntArray(6)  // 6 bitplane pointers
 
+    // --- Sprite pointers ---
+    val sprpt = IntArray(8)  // 8 sprite DMA pointers
+    private val sprArmed = BooleanArray(8) // sprite armed for this scanline
+
     // --- Display window ---
     var diwstrt: Int = 0
     var diwstop: Int = 0
@@ -140,6 +144,15 @@ class Agnus {
                 val idx = (offset - 0x0E2) / 4
                 if (idx < 6) bplpt[idx] = (bplpt[idx] and 0x1F0000) or (value and 0xFFFE)
             }
+            // Sprite pointers ($120–$13E)
+            in 0x120..0x13E step 4 -> {
+                val idx = (offset - 0x120) / 4
+                if (idx < 8) sprpt[idx] = (sprpt[idx] and 0xFFFF) or ((value and 0x1F) shl 16)
+            }
+            in 0x122..0x13E step 4 -> {
+                val idx = (offset - 0x122) / 4
+                if (idx < 8) sprpt[idx] = (sprpt[idx] and 0x1F0000) or (value and 0xFFFE)
+            }
         }
     }
 
@@ -195,18 +208,21 @@ class Agnus {
      * Returns true at start of vertical blank (vpos wraps).
      */
     fun advanceBeam(): Boolean {
+        // Sprite DMA: fetch at specific hpos slots (beginning of line)
+        if (hpos in 0..7) fetchSprite(hpos)
+
         // Bitplane DMA: fetch during active display
         fetchBitplanes()
 
         hpos++
-        if (hpos >= 228) { // PAL: 228 color clocks per line
+        if (hpos >= 228) {
             hpos = 0
             vpos++
-            if (vpos >= 313) { // PAL: 313 lines per frame
+            if (vpos >= 313) {
                 vpos = 0
                 coppc = cop1lc
                 copState = CopperState.FETCH_INST
-                return true // VBLANK
+                return true
             }
         }
         return false
@@ -236,6 +252,52 @@ class Agnus {
         for (plane in 0 until numPlanes) {
             d.bpldat[plane] = b.readWord(bplpt[plane] and 0x1FFFFE)
             bplpt[plane] += 2
+        }
+    }
+
+    /**
+     * Sprite DMA: each sprite gets 2 DMA slots per scanline.
+     * First fetch: SPRxPOS/SPRxCTL (position/control words)
+     * Second fetch: SPRxDATA/SPRxDATB (pixel data)
+     * Sprites are fetched at hpos 0–7 (one sprite per slot).
+     */
+    private fun fetchSprite(sprIdx: Int) {
+        if (!dmaEnabled(DMA_SPRITE)) return
+        val b = bus ?: return
+        val d = denise ?: return
+        if (sprIdx >= 8) return
+
+        val ptr = sprpt[sprIdx]
+        if (ptr == 0) return
+
+        // Read position/control word pair
+        val pos = b.readWord(ptr and 0x1FFFFE)
+        val ctl = b.readWord((ptr + 2) and 0x1FFFFE)
+
+        val vstart = (pos and 0xFF) or ((ctl and 0x04) shl 6)
+        val vstop = ((ctl shr 8) and 0xFF) or ((ctl and 0x02) shl 7)
+
+        if (vpos == vstart) {
+            sprArmed[sprIdx] = true
+        }
+        if (vpos == vstop) {
+            sprArmed[sprIdx] = false
+            // Advance pointer past end-of-sprite marker
+            sprpt[sprIdx] += 4
+            return
+        }
+
+        if (sprArmed[sprIdx]) {
+            // Fetch sprite data words
+            val data = b.readWord((ptr + 4) and 0x1FFFFE)
+            val datb = b.readWord((ptr + 6) and 0x1FFFFE)
+            d.sprites[sprIdx].pos = pos
+            d.sprites[sprIdx].ctl = ctl
+            d.sprites[sprIdx].data = data
+            d.sprites[sprIdx].datb = datb
+            sprpt[sprIdx] += 8 // advance past pos+ctl+data+datb
+        } else {
+            sprpt[sprIdx] += 4 // advance past pos+ctl only
         }
     }
 
