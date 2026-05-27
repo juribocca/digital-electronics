@@ -8,7 +8,8 @@ package com.namirial.trust.electronics.amiga500
 class CustomRegisters(
     val agnus: Agnus,
     val denise: Denise,
-    val paula: Paula
+    val paula: Paula,
+    var floppy: FloppyController? = null
 ) {
     fun readByte(offset: Int): Int {
         val word = readWord(offset and 0x1FE)
@@ -16,26 +17,38 @@ class CustomRegisters(
     }
 
     fun readWord(offset: Int): Int = when {
+        isDiskReg(offset) -> floppy?.readReg(offset) ?: 0
         isPaulaReg(offset) -> paula.readReg(offset)
         isDeniseReg(offset) -> denise.readReg(offset)
         else -> agnus.readReg(offset)
     }
 
     fun writeByte(offset: Int, value: Int) {
-        // Custom registers are word-addressed; byte writes are unusual but handled
         writeWord(offset and 0x1FE, value and 0xFF)
     }
 
     fun writeWord(offset: Int, value: Int) {
         when {
+            isDiskReg(offset) -> floppy?.writeReg(offset, value)
             isPaulaReg(offset) -> paula.writeReg(offset, value)
             isDeniseReg(offset) -> denise.writeReg(offset, value)
             else -> agnus.writeReg(offset, value)
         }
     }
 
+    private fun isDiskReg(offset: Int): Boolean = when (offset) {
+        0x010,            // ADKCONR
+        0x01A,            // DSKBYTR
+        0x020, 0x022,     // DSKPTH, DSKPTL
+        0x024,            // DSKLEN
+        0x07E,            // DSKSYNC
+        0x09E             // ADKCON
+        -> true
+        else -> false
+    }
+
     private fun isPaulaReg(offset: Int): Boolean = when (offset) {
-        in 0x09A..0x09F,  // INTENA, INTREQ
+        in 0x09A..0x09D,  // INTENA, INTREQ (not 0x09E which is ADKCON)
         in 0x0A0..0x0DF,  // Audio channels
         in 0x01C..0x01F   // INTENAR, INTREQR
         -> true

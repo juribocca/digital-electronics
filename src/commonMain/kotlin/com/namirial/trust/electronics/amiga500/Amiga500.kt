@@ -27,12 +27,21 @@ class Amiga500 {
     val bus = AddressBus()
     val cpu: MC68000
 
-    val customRegisters = CustomRegisters(agnus, denise, paula)
+    // Floppy subsystem
+    val floppyDrives = Array(4) { FloppyDrive() }
+    val floppyController: FloppyController
+
+    val customRegisters: CustomRegisters
 
     private var colorClockCounter = 0
     private var ciaTickDivider = 0
+    private var diskDmaSlotCounter = 0
+    private var prevCiaBStep = true  // Previous /STEP state for edge detection
 
     init {
+        floppyController = FloppyController(bus, paula)
+        floppyController.drive = floppyDrives[0]
+        customRegisters = CustomRegisters(agnus, denise, paula, floppyController)
         bus.ciaA = ciaA
         bus.ciaB = ciaB
         bus.customRegisters = customRegisters
@@ -51,9 +60,13 @@ class Amiga500 {
         cpu.reset()
     }
 
+    /** Insert an ADF disk image into a drive (0–3). */
+    fun insertDisk(driveNum: Int, adf: ByteArray) {
+        floppyDrives[driveNum].insertDisk(adf)
+    }
+
     /**
      * Execute one color clock (one DMA slot = 2 CPU cycles).
-     * This is the fundamental timing unit of the Amiga.
      */
     fun tickColorClock() {
         // CPU gets 2 cycles per color clock
@@ -64,6 +77,15 @@ class Amiga500 {
         colorClockCounter++
         if (colorClockCounter and 1 == 0) {
             agnus.copperCycle(bus, paula)
+        }
+
+        // Disk DMA: one word every 3 color clocks when disk DMA enabled
+        diskDmaSlotCounter++
+        if (diskDmaSlotCounter >= 3) {
+            diskDmaSlotCounter = 0
+            if (agnus.dmaEnabled(Agnus.DMA_DISK)) {
+                floppyController.tick()
+            }
         }
 
         // Advance beam
@@ -78,44 +100,76 @@ class Amiga500 {
             ciaTickDivider = 0
             ciaA.tick()
             ciaB.tick()
-            // CIA-A interrupt → Paula PORTS (IPL 2)
+            updateDiskSignals()
             if (ciaA.irqPending()) paula.requestInterrupt(Paula.INT_PORTS)
-            // CIA-B interrupt → Paula EXTER (IPL 6)
             if (ciaB.irqPending()) paula.requestInterrupt(Paula.INT_EXTER)
         }
 
         // Check interrupts for CPU
         val ipl = paula.activeIPL()
         if (ipl > cpu.interruptMask) {
-            // Trigger autovector interrupt on 68000
             triggerInterrupt(ipl)
         }
     }
 
     /**
-     * Run for a specified number of scanlines.
+     * Process CIA-B port B outputs → drive control signals.
+     * Process drive status → CIA-B port A inputs.
      */
-    fun runScanlines(lines: Int) {
-        repeat(lines * 228) { tickColorClock() }
+    private fun updateDiskSignals() {
+        val prb = ciaB.prb
+
+        // Determine which drive is selected (active low, bits 3–6)
+        val selectedDrive = when {
+            (prb and 0x08) == 0 -> 0
+            (prb and 0x10) == 0 -> 1
+            (prb and 0x20) == 0 -> 2
+            (prb and 0x40) == 0 -> 3
+            else -> -1
+        }
+
+        val drive = if (selectedDrive in 0..3) floppyDrives[selectedDrive] else null
+        floppyController.drive = drive
+
+        if (drive != null) {
+            // Motor control (active low)
+            drive.motorOn = (prb and 0x80) == 0
+
+            // Side select (active low: 0 = side 1/lower)
+            drive.side = if ((prb and 0x04) == 0) 1 else 0
+
+            // Step pulse (falling edge of /STEP, bit 0)
+            val stepNow = (prb and 0x01) == 0
+            if (stepNow && !prevCiaBStep) {
+                // Falling edge detected — step the head
+                val dirInward = (prb and 0x02) != 0
+                drive.step(dirInward)
+                floppyController.resetDMA() // Track changed, reload MFM
+            }
+            prevCiaBStep = stepNow
+
+            // Update CIA-B PRA with drive status (active low signals)
+            var pra = ciaB.pra or 0x3C // Set bits 5-2 high (inactive) by default
+            if (drive.motorOn && drive.diskInserted) pra = pra and 0xDF.toInt() // /DSKRDY low
+            if (drive.isTrack0()) pra = pra and 0xEF.toInt()                    // /DSKTRACK0 low
+            if (drive.writeProtected) pra = pra and 0xF7.toInt()                // /DSKPROT low
+            if (drive.diskChanged) pra = pra and 0xFB.toInt()                   // /DSKCHANGE low
+            ciaB.pra = pra
+        }
     }
 
-    /**
-     * Run for one full PAL frame (313 lines × 228 color clocks).
-     */
+    fun runScanlines(lines: Int) { repeat(lines * 228) { tickColorClock() } }
     fun runFrame() = runScanlines(313)
 
     private fun triggerInterrupt(level: Int) {
-        // 68000 autovector: vector = 24 + level
         val vectorAddr = (24 + level) * 4
         val oldSr = cpu.sr
-        cpu.sr = (cpu.sr and 0xF8FF.toInt()) or (level shl 8) // set IPL mask
-        cpu.sr = cpu.sr or 0x2000 // enter supervisor mode
-        // Push PC and SR
+        cpu.sr = (cpu.sr and 0xF8FF.toInt()) or (level shl 8)
+        cpu.sr = cpu.sr or 0x2000
         cpu.a[7] -= 4
         bus.writeLong(cpu.a[7], cpu.pc)
         cpu.a[7] -= 2
         bus.writeWord(cpu.a[7], oldSr)
-        // Load new PC from vector table
         cpu.pc = bus.readLong(vectorAddr)
     }
 }
