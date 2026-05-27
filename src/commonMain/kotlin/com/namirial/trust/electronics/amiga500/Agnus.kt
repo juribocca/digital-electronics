@@ -22,6 +22,12 @@ package com.namirial.trust.electronics.amiga500
  */
 class Agnus {
 
+    // --- Bus reference (set by Amiga500) ---
+    var bus: AddressBus? = null
+
+    // --- Blitter ---
+    val blitter: Blitter by lazy { Blitter(bus!!) }
+
     // --- DMA control ---
     var dmacon: Int = 0  // bit 15 = master enable, bits 0–9 = channel enables
 
@@ -84,8 +90,8 @@ class Agnus {
 
     /** Read an Agnus register. */
     fun readReg(offset: Int): Int = when (offset) {
-        0x002 -> dmacon  // DMACONR
-        0x004 -> (vpos shr 8) and 0x01  // VPOSR (high bit of vpos)
+        0x002 -> dmacon or (if (blitBusy) 0x4000 else 0)  // DMACONR + BBUSY
+        0x004 -> (vpos shr 8) and 0x01  // VPOSR
         0x006 -> ((vpos and 0xFF) shl 8) or (hpos and 0xFF)  // VHPOSR
         else -> 0
     }
@@ -120,7 +126,7 @@ class Agnus {
             0x052 -> bltapt = (bltapt and 0x1F0000) or (value and 0xFFFE)
             0x054 -> bltdpt = (bltdpt and 0xFFFF) or ((value and 0x1F) shl 16)
             0x056 -> bltdpt = (bltdpt and 0x1F0000) or (value and 0xFFFE)
-            0x058 -> { bltsize = value; blitBusy = true } // BLTSIZE triggers blit
+            0x058 -> { bltsize = value; startBlit() } // BLTSIZE triggers blit
             0x060 -> bltcmod = value.toShort().toInt()
             0x062 -> bltbmod = value.toShort().toInt()
             0x064 -> bltamod = value.toShort().toInt()
@@ -201,5 +207,36 @@ class Agnus {
             }
         }
         return false
+    }
+
+    // --- Blitter execution ---
+    var paula: Paula? = null
+
+    private fun startBlit() {
+        blitBusy = true
+        // Copy registers to blitter
+        val b = blitter
+        b.con0 = bltcon0
+        b.con1 = bltcon1
+        b.afwm = bltafwm
+        b.alwm = bltalwm
+        b.apt = bltapt
+        b.bpt = bltbpt
+        b.cpt = bltcpt
+        b.dpt = bltdpt
+        b.amod = bltamod
+        b.bmod = bltbmod
+        b.cmod = bltcmod
+        b.dmod = bltdmod
+        // Execute immediately (instant blit — no cycle-accurate timing)
+        b.execute(bltsize)
+        // Write back pointers (they advance during blit)
+        bltapt = b.apt
+        bltbpt = b.bpt
+        bltcpt = b.cpt
+        bltdpt = b.dpt
+        blitBusy = false
+        // Fire blitter-finished interrupt
+        paula?.requestInterrupt(Paula.INT_BLIT)
     }
 }

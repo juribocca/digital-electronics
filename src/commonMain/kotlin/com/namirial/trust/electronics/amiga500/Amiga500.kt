@@ -42,6 +42,8 @@ class Amiga500 {
         floppyController = FloppyController(bus, paula)
         floppyController.drive = floppyDrives[0]
         customRegisters = CustomRegisters(agnus, denise, paula, floppyController)
+        agnus.bus = bus
+        agnus.paula = paula
         bus.ciaA = ciaA
         bus.ciaB = ciaB
         bus.customRegisters = customRegisters
