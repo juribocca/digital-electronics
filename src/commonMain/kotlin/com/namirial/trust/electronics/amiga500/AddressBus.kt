@@ -21,32 +21,48 @@ class AddressBus {
     var ciaB: CIA8520? = null
     var customRegisters: CustomRegisters? = null
 
+    /**
+     * OVL (Overlay) flag — controlled by CIA-A PRA bit 0.
+     * When true: Kickstart ROM is mapped at $000000–$03FFFF (overlays Chip RAM).
+     * When false: Chip RAM is visible at $000000 (normal operation).
+     * At power-on/reset, OVL is high (ROM visible at 0). Kickstart clears it after
+     * copying exception vectors to RAM.
+     */
+    val overlay: Boolean get() = (ciaA?.pra ?: 1) and 0x01 != 0
+
+    private fun isOverlayRead(addr: Int): Boolean =
+        overlay && addr < 0x040000
+
     fun readByte(addr: Int): Int {
         val a = addr and 0xFFFFFF
         return when {
+            isOverlayRead(a) -> kickstartRom[a and 0x3FFFF].toInt() and 0xFF
             a < 0x080000 -> chipRam[a].toInt() and 0xFF
             a in 0xBFD000..0xBFDFFF -> ciaA?.read((a shr 8) and 0xF) ?: 0
             a in 0xBFE000..0xBFEFFF -> ciaB?.read((a shr 8) and 0xF) ?: 0
             a in 0xDFF000..0xDFF1FF -> customRegisters?.readByte(a and 0x1FF) ?: 0
             a >= 0xFC0000 -> kickstartRom[(a - 0xFC0000) and 0x3FFFF].toInt() and 0xFF
-            else -> 0xFF // unmapped
+            else -> 0xFF
         }
     }
 
     fun writeByte(addr: Int, value: Int) {
         val a = addr and 0xFFFFFF
         when {
-            a < 0x080000 -> chipRam[a] = value.toByte()
+            a < 0x080000 -> chipRam[a] = value.toByte() // writes always go to RAM (even with overlay)
             a in 0xBFD000..0xBFDFFF -> ciaA?.write((a shr 8) and 0xF, value and 0xFF)
             a in 0xBFE000..0xBFEFFF -> ciaB?.write((a shr 8) and 0xF, value and 0xFF)
             a in 0xDFF000..0xDFF1FF -> customRegisters?.writeByte(a and 0x1FF, value and 0xFF)
-            // ROM writes are ignored
         }
     }
 
     fun readWord(addr: Int): Int {
-        val a = addr and 0xFFFFFE // word-aligned
+        val a = addr and 0xFFFFFE
         return when {
+            isOverlayRead(a) -> {
+                val off = a and 0x3FFFF
+                ((kickstartRom[off].toInt() and 0xFF) shl 8) or (kickstartRom[off + 1].toInt() and 0xFF)
+            }
             a < 0x080000 ->
                 ((chipRam[a].toInt() and 0xFF) shl 8) or (chipRam[a + 1].toInt() and 0xFF)
             a in 0xDFF000..0xDFF1FF ->
@@ -80,9 +96,6 @@ class AddressBus {
         writeWord(addr + 2, value and 0xFFFF)
     }
 
-    /**
-     * Load a Kickstart ROM image into the ROM area.
-     */
     fun loadKickstart(data: ByteArray) {
         data.copyInto(kickstartRom, 0, 0, minOf(data.size, kickstartRom.size))
     }

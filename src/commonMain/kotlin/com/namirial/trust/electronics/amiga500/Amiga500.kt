@@ -44,6 +44,7 @@ class Amiga500 {
         customRegisters = CustomRegisters(agnus, denise, paula, floppyController)
         agnus.bus = bus
         agnus.paula = paula
+        agnus.denise = denise
         bus.ciaA = ciaA
         bus.ciaB = ciaB
         bus.customRegisters = customRegisters
@@ -55,10 +56,9 @@ class Amiga500 {
      */
     fun loadKickstart(rom: ByteArray) {
         bus.loadKickstart(rom)
-        // Mirror reset vectors to address 0 (overlay mode at boot)
-        for (i in 0 until 8) {
-            bus.chipRam[i] = rom[i]
-        }
+        // OVL is high at reset (CIA-A PRA bit 0 = 1 by default),
+        // so ROM is visible at $000000 for reset vectors.
+        ciaA.pra = ciaA.pra or 0x01 // ensure OVL set
         cpu.reset()
     }
 

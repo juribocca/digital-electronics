@@ -45,11 +45,14 @@ class Amiga500Test {
 
         amiga.loadKickstart(rom)
 
-        // Run until halted
-        amiga.cpu.run(100)
+        // Run exactly 4 instructions: MOVEQ, MOVEQ, ADD, MOVE.L
+        repeat(4) { amiga.cpu.step() }
 
         // Verify: D0 should be 42 + 8 = 50
         assertEquals(50, amiga.cpu.d[0])
+
+        // Clear overlay so we can read Chip RAM at low addresses
+        amiga.ciaA.pra = amiga.ciaA.pra and 0xFE.toInt()
 
         // Verify: Chip RAM at $000100 should contain 50 (as a long)
         assertEquals(50, amiga.bus.readLong(0x000100))
@@ -61,6 +64,9 @@ class Amiga500Test {
     @Test
     fun exampleCopperList() {
         val amiga = Amiga500()
+
+        // Clear overlay so Chip RAM is visible at low addresses
+        amiga.ciaA.pra = amiga.ciaA.pra and 0xFE.toInt()
 
         // First verify direct write to color register works
         amiga.bus.writeWord(0xDFF180, 0x0F00)

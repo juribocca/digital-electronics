@@ -195,6 +195,9 @@ class Agnus {
      * Returns true at start of vertical blank (vpos wraps).
      */
     fun advanceBeam(): Boolean {
+        // Bitplane DMA: fetch during active display
+        fetchBitplanes()
+
         hpos++
         if (hpos >= 228) { // PAL: 228 color clocks per line
             hpos = 0
@@ -207,6 +210,33 @@ class Agnus {
             }
         }
         return false
+    }
+
+    // --- Bitplane DMA ---
+    var denise: Denise? = null
+
+    private fun fetchBitplanes() {
+        if (!dmaEnabled(DMA_BITPLANE)) return
+        val b = bus ?: return
+        val d = denise ?: return
+
+        // Vertical display window (DIW): vstart = DIWSTRT[15:8], vstop = DIWSTOP[15:8] | 0x100
+        val vstart = (diwstrt shr 8) and 0xFF
+        val vstop = ((diwstop shr 8) and 0xFF) or 0x100
+        if (vpos < vstart || vpos >= vstop) return
+
+        // Horizontal data fetch: DDFSTRT to DDFSTOP (in color clock units, *2 for hpos)
+        val hstart = (ddfstrt and 0xFC) // aligned to 8-pixel boundary
+        val hstop = (ddfstop and 0xFC)
+        val fetchH = hpos * 2 // approximate: hpos in color clocks, fetch positions in lo-res pixels/2
+        if (hpos < hstart / 2 || hpos > hstop / 2) return
+
+        // Fetch one word per active bitplane
+        val numPlanes = d.numBitplanes
+        for (plane in 0 until numPlanes) {
+            d.bpldat[plane] = b.readWord(bplpt[plane] and 0x1FFFFE)
+            bplpt[plane] += 2
+        }
     }
 
     // --- Blitter execution ---
