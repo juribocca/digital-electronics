@@ -15,10 +15,33 @@ package com.namirial.trust.electronics.amiga500
 class AddressBus {
 
     val chipRam = ByteArray(512 * 1024)       // 512 KB Chip RAM
-    val kickstartRom = ByteArray(256 * 1024)  // 256 KB ROM
+    var kickstartRom = ByteArray(256 * 1024)  // 256 KB or 512 KB ROM
+        private set
+    private var romMask = 0x3FFFF             // mask for ROM address (256KB default)
 
     var ciaA: CIA8520? = null
     var ciaB: CIA8520? = null
+
+    // --- Memory watchpoints ---
+    data class Watchpoint(val start: Int, val end: Int, val onRead: Boolean, val onWrite: Boolean)
+    /** Called when a watchpoint is hit: (address, isWrite, value). */
+    var watchpointCallback: ((Int, Boolean, Int) -> Unit)? = null
+    private val watchpoints = mutableListOf<Watchpoint>()
+
+    fun addWatchpoint(start: Int, end: Int, onRead: Boolean = true, onWrite: Boolean = true) {
+        watchpoints.add(Watchpoint(start, end, onRead, onWrite))
+    }
+    fun clearWatchpoints() { watchpoints.clear() }
+
+    private fun checkWatch(addr: Int, isWrite: Boolean, value: Int) {
+        if (watchpoints.isEmpty()) return
+        for (wp in watchpoints) {
+            if (addr in wp.start..wp.end && ((isWrite && wp.onWrite) || (!isWrite && wp.onRead))) {
+                watchpointCallback?.invoke(addr, isWrite, value)
+                return
+            }
+        }
+    }
     var customRegisters: CustomRegisters? = null
 
     /**
@@ -31,25 +54,28 @@ class AddressBus {
     val overlay: Boolean get() = (ciaA?.pra ?: 1) and 0x01 != 0
 
     private fun isOverlayRead(addr: Int): Boolean =
-        overlay && addr < 0x040000
+        overlay && addr < kickstartRom.size
 
     fun readByte(addr: Int): Int {
         val a = addr and 0xFFFFFF
-        return when {
-            isOverlayRead(a) -> kickstartRom[a and 0x3FFFF].toInt() and 0xFF
+        val v = when {
+            isOverlayRead(a) -> kickstartRom[a and romMask].toInt() and 0xFF
             a < 0x080000 -> chipRam[a].toInt() and 0xFF
             a in 0xBFD000..0xBFDFFF -> ciaA?.read((a shr 8) and 0xF) ?: 0
             a in 0xBFE000..0xBFEFFF -> ciaB?.read((a shr 8) and 0xF) ?: 0
             a in 0xDFF000..0xDFF1FF -> customRegisters?.readByte(a and 0x1FF) ?: 0
-            a >= 0xFC0000 -> kickstartRom[(a - 0xFC0000) and 0x3FFFF].toInt() and 0xFF
+            a >= 0xFC0000 -> kickstartRom[(a - 0xFC0000) and romMask].toInt() and 0xFF
             else -> 0xFF
         }
+        checkWatch(a, false, v)
+        return v
     }
 
     fun writeByte(addr: Int, value: Int) {
         val a = addr and 0xFFFFFF
+        checkWatch(a, true, value and 0xFF)
         when {
-            a < 0x080000 -> chipRam[a] = value.toByte() // writes always go to RAM (even with overlay)
+            a < 0x080000 -> chipRam[a] = value.toByte()
             a in 0xBFD000..0xBFDFFF -> ciaA?.write((a shr 8) and 0xF, value and 0xFF)
             a in 0xBFE000..0xBFEFFF -> ciaB?.write((a shr 8) and 0xF, value and 0xFF)
             a in 0xDFF000..0xDFF1FF -> customRegisters?.writeByte(a and 0x1FF, value and 0xFF)
@@ -60,7 +86,7 @@ class AddressBus {
         val a = addr and 0xFFFFFE
         return when {
             isOverlayRead(a) -> {
-                val off = a and 0x3FFFF
+                val off = a and romMask
                 ((kickstartRom[off].toInt() and 0xFF) shl 8) or (kickstartRom[off + 1].toInt() and 0xFF)
             }
             a < 0x080000 ->
@@ -68,7 +94,7 @@ class AddressBus {
             a in 0xDFF000..0xDFF1FF ->
                 customRegisters?.readWord(a and 0x1FF) ?: 0
             a >= 0xFC0000 -> {
-                val off = (a - 0xFC0000) and 0x3FFFF
+                val off = (a - 0xFC0000) and romMask
                 ((kickstartRom[off].toInt() and 0xFF) shl 8) or (kickstartRom[off + 1].toInt() and 0xFF)
             }
             else -> (readByte(a) shl 8) or readByte(a + 1)
@@ -97,6 +123,7 @@ class AddressBus {
     }
 
     fun loadKickstart(data: ByteArray) {
-        data.copyInto(kickstartRom, 0, 0, minOf(data.size, kickstartRom.size))
+        kickstartRom = data.copyOf()
+        romMask = data.size - 1 // 0x3FFFF for 256KB, 0x7FFFF for 512KB
     }
 }

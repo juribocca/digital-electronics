@@ -59,9 +59,10 @@ class Amiga500 {
      */
     fun loadKickstart(rom: ByteArray) {
         bus.loadKickstart(rom)
-        // OVL is high at reset (CIA-A PRA bit 0 = 1 by default),
-        // so ROM is visible at $000000 for reset vectors.
         ciaA.pra = ciaA.pra or 0x01 // ensure OVL set
+        // Queue power-up key sequence (keyboard self-test result)
+        input.keyBuffer.addLast(0xFD) // initiate power-up
+        input.keyBuffer.addLast(0xFE) // terminate power-up (all OK)
         cpu.reset()
     }
 
@@ -100,6 +101,10 @@ class Amiga500 {
         val vblank = agnus.advanceBeam()
         if (vblank) {
             paula.requestInterrupt(Paula.INT_VERTB)
+            // CIA-A TOD is clocked by VBLANK (50Hz PAL)
+            ciaA.todLo = (ciaA.todLo + 1) and 0xFF
+            if (ciaA.todLo == 0) ciaA.todMid = (ciaA.todMid + 1) and 0xFF
+            if (ciaA.todLo == 0 && ciaA.todMid == 0) ciaA.todHi = (ciaA.todHi + 1) and 0xFF
         }
 
         // CIA E-clock: divide by 5 (color clocks) ≈ 709 kHz

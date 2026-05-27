@@ -17,7 +17,7 @@ package com.namirial.trust.electronics.amiga500
 class InputController {
 
     // --- Keyboard ---
-    private val keyBuffer = ArrayDeque<Int>()
+    val keyBuffer = ArrayDeque<Int>()
     var keyboardHandshake = false
 
     /** Queue a key press (raw Amiga keycode, 0–127). Bit 7 = 0 for press, 1 for release. */

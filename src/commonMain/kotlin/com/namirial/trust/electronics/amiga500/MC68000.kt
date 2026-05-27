@@ -19,9 +19,7 @@ class MC68000(private val bus: AddressBus) {
     var usp: Int = 0
     var stopped = false
     var halted = false
-        private set
     var cycles: Long = 0
-        private set
 
     val ccr: Int get() = sr and 0x1F
     val supervisorMode: Boolean get() = (sr and 0x2000) != 0
@@ -143,14 +141,36 @@ class MC68000(private val bus: AddressBus) {
     var instructionPC: Int = 0
         private set
 
+    // --- Diagnostics ---
+    /** Called after each instruction with (pc, opcode, d[], a[], sr). */
+    var traceCallback: ((CpuState) -> Unit)? = null
+    /** Called when an illegal/unimplemented opcode is encountered. Return true to suppress exception. */
+    var illegalOpcodeCallback: ((Int, Int) -> Boolean)? = null
+    /** Set of PC addresses that trigger a halt. */
+    val breakpoints = mutableSetOf<Int>()
+    /** Last executed opcode (for diagnostics). */
+    var lastOpcode: Int = 0
+        private set
+
+    data class CpuState(
+        val pc: Int, val opcode: Int,
+        val d: IntArray, val a: IntArray,
+        val sr: Int, val cycles: Long
+    )
+
     fun step(): Boolean {
         if (halted) return false
         if (stopped) return true
         val traceEnabled = (sr and 0x8000) != 0
-        instructionPC = pc - (if (prefetchValid) 2 else 0) // address of instruction about to execute
+        instructionPC = pc - (if (prefetchValid) 2 else 0)
+        // Breakpoint check
+        if (instructionPC in breakpoints) { halted = true; return false }
         val opcode = fetchWord()
+        lastOpcode = opcode
         decode(opcode)
         cycles++
+        // Trace callback
+        traceCallback?.invoke(CpuState(instructionPC, opcode, d.copyOf(), a.copyOf(), sr, cycles))
         if (!halted && traceEnabled) exception(9)
         return !halted
     }
@@ -198,13 +218,18 @@ class MC68000(private val bus: AddressBus) {
             0x7 -> decodeMoveQ(opcode)
             0x8 -> decodeGroup8(opcode)
             0x9 -> decodeGroup9(opcode)
-            0xA -> exception(10) // Line-A emulator
+            0xA -> triggerIllegal(opcode, 10)
             0xB -> decodeGroupB(opcode)
             0xC -> decodeGroupC(opcode)
             0xD -> decodeGroupD(opcode)
             0xE -> decodeShift(opcode)
-            0xF -> exception(11) // Line-F emulator
+            0xF -> triggerIllegal(opcode, 11)
         }
+    }
+
+    private fun triggerIllegal(opcode: Int, vector: Int) {
+        if (illegalOpcodeCallback?.invoke(opcode, instructionPC) == true) return
+        exception(vector)
     }
 
     // --- Effective Address resolution ---
@@ -526,7 +551,7 @@ class MC68000(private val bus: AddressBus) {
             (opcode and 0xFF00) == 0x4600 -> { val sz = sizeFromBits((opcode shr 6) and 0x3); val m = (opcode shr 3) and 0x7; val r = opcode and 0x7; val v = eaRead(m, r, sz); val res = v.inv() and sizeMask(sz); eaWrite(m, r, sz, res); setFlags(n = (res and msbMask(sz)) != 0, z = res == 0, v = false, c = false) }
             (opcode and 0xFF00) == 0x4A00 -> { val sz = sizeFromBits((opcode shr 6) and 0x3); val m = (opcode shr 3) and 0x7; val r = opcode and 0x7; val v = eaRead(m, r, sz) and sizeMask(sz); setFlags(n = (v and msbMask(sz)) != 0, z = v == 0, v = false, c = false) }
             (opcode and 0xFFC0) == 0x4840 -> { val m = (opcode shr 3) and 0x7; val r = opcode and 0x7; push(eaCalcAddr(m, r), 4) } // PEA
-            else -> exception(4)
+            else -> triggerIllegal(opcode, 4)
         }
     }
 
